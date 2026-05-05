@@ -1,0 +1,16 @@
+// Central barrel export for all Mongoose models
+// Import from here: import { User, Client, Matter } from "../models"
+
+export { User } from "./User.model"
+export { Lead } from "./Lead.model"
+export { Client } from "./Client.model"
+export { Matter } from "./Matter.model"
+export { Invoice } from "./Invoice.model"
+export { LegalDocument } from "./Document.model"
+export { Retainer } from "./Retainer.model"
+export { RetainerUsage } from "./RetainerUsage.model"
+export { Message } from "./Message.model"
+export { Notification } from "./Notification.model"
+export { AuditLog } from "./AuditLog.model"
+export { TeamMember } from "./TeamMember.model"
+export { MatterTask, MatterNote } from "./MatterTask.model"
