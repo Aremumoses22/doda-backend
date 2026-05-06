@@ -1,4 +1,6 @@
 import { v2 as cloudinary, UploadApiResponse } from "cloudinary"
+import fs from "fs"
+import path from "path"
 
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -7,11 +9,25 @@ cloudinary.config({
 })
 
 const FOLDER = process.env.CLOUDINARY_FOLDER || "doda"
+const LOCAL_UPLOADS_DIR = path.join(process.cwd(), "local_uploads")
+const BACKEND_URL = process.env.BACKEND_URL || `http://localhost:${process.env.PORT || 8080}`
+const LOCAL_PREFIX = "local/"
 
-/**
- * Upload a file from local disk path to Cloudinary.
- * Stores in folder: doda/clients/:clientId/matters/:matterId  (or /general)
- */
+function localFallback(filePath: string): UploadApiResponse {
+  fs.mkdirSync(LOCAL_UPLOADS_DIR, { recursive: true })
+  const fileName = `${Date.now()}-${path.basename(filePath)}`
+  const destPath = path.join(LOCAL_UPLOADS_DIR, fileName)
+  fs.copyFileSync(filePath, destPath)
+  const publicId = `${LOCAL_PREFIX}${fileName}`
+  return {
+    secure_url: `${BACKEND_URL}/local_uploads/${fileName}`,
+    public_id: publicId,
+    url: `${BACKEND_URL}/local_uploads/${fileName}`,
+    resource_type: "raw",
+    format: path.extname(filePath).replace(".", ""),
+  } as unknown as UploadApiResponse
+}
+
 export async function uploadDocument(
   filePath: string,
   clientId?: string,
@@ -23,20 +39,24 @@ export async function uploadDocument(
       ? `${FOLDER}/clients/${clientId}/general`
       : `${FOLDER}/general`
 
-  const result = await cloudinary.uploader.upload(filePath, {
-    folder,
-    resource_type: "raw",       // handles PDFs, DOCX, XLSX
-    access_mode: "authenticated", // private — requires signed URL to access
-  })
-
-  return result
+  try {
+    const result = await cloudinary.uploader.upload(filePath, {
+      folder,
+      resource_type: "raw",
+      access_mode: "authenticated",
+    })
+    return result
+  } catch (err) {
+    console.warn("[STORAGE] Cloudinary upload failed, using local fallback:", (err as Error).message)
+    return localFallback(filePath)
+  }
 }
 
-/**
- * Generate a signed, time-limited access URL for a private Cloudinary resource.
- * Default expiry: 30 minutes.
- */
 export function getSignedUrl(publicId: string, expiresInSeconds = 1800): string {
+  if (publicId.startsWith(LOCAL_PREFIX)) {
+    const fileName = publicId.slice(LOCAL_PREFIX.length)
+    return `${BACKEND_URL}/local_uploads/${fileName}`
+  }
   return cloudinary.url(publicId, {
     resource_type: "raw",
     sign_url: true,
@@ -45,9 +65,12 @@ export function getSignedUrl(publicId: string, expiresInSeconds = 1800): string 
   })
 }
 
-/**
- * Permanently delete a file from Cloudinary.
- */
 export async function deleteDocument(publicId: string): Promise<void> {
+  if (publicId.startsWith(LOCAL_PREFIX)) {
+    const fileName = publicId.slice(LOCAL_PREFIX.length)
+    const filePath = path.join(LOCAL_UPLOADS_DIR, fileName)
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath)
+    return
+  }
   await cloudinary.uploader.destroy(publicId, { resource_type: "raw" })
 }

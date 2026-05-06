@@ -23,11 +23,25 @@ const router = Router()
 const billingRoles = ["principal", "billing_admin", "lawyer"] as const
 
 // GET /api/invoices
-router.get("/", requireAuth, requireRole(...billingRoles, "admin_staff"), async (req, res) => {
+router.get("/", requireAuth, async (req, res) => {
   try {
-    const { clientId, status, page = "1", limit = "20" } = req.query as Record<string, string>
+    const { status, page = "1", limit = "20" } = req.query as Record<string, string>
     const filter: Record<string, unknown> = {}
-    if (clientId) filter.clientId = clientId
+
+    if (req.user!.role === "client") {
+      // Clients only see their own invoices
+      const client = await Client.findOne({ userId: req.user!.id }).select("_id").lean()
+      if (!client) return res.json({ invoices: [], total: 0, page: 1, limit: parseInt(limit) })
+      filter.clientId = client._id
+    } else {
+      const allowedRoles = [...billingRoles, "admin_staff"] as string[]
+      if (!allowedRoles.includes(req.user!.role)) {
+        return res.status(403).json({ error: "Access denied" })
+      }
+      const { clientId } = req.query as Record<string, string>
+      if (clientId) filter.clientId = clientId
+    }
+
     if (status) filter.status = status
     const skip = (parseInt(page) - 1) * parseInt(limit)
     const [invoices, total] = await Promise.all([

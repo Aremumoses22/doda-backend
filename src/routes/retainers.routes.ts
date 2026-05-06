@@ -1,22 +1,33 @@
 import { Router } from "express"
 import { Retainer } from "../models/Retainer.model"
 import { RetainerUsage } from "../models/RetainerUsage.model"
+import { Client } from "../models/Client.model"
 import { requireAuth, requireRole } from "../middleware/auth.middleware"
 
 const router = Router()
 const billingRoles = ["principal", "billing_admin", "lawyer"] as const
 
 // GET /api/retainers
-router.get("/", requireAuth, requireRole(...billingRoles, "admin_staff"), async (req, res) => {
+router.get("/", requireAuth, async (req, res) => {
   try {
-    const { status } = req.query as { status?: string }
     const filter: Record<string, unknown> = {}
-    if (status) filter.status = status
+
+    if (req.user!.role === "client") {
+      // Clients may only see their own retainer
+      const client = await Client.findOne({ userId: req.user!.id }).select("_id").lean()
+      if (!client) return res.json({ retainers: [] })
+      filter.clientId = client._id
+    } else {
+      // Admin roles can filter by status
+      const { status } = req.query as { status?: string }
+      if (status) filter.status = status
+    }
+
     const retainers = await Retainer.find(filter)
       .sort({ createdAt: -1 })
       .populate("clientId", "companyName individualName clientCode primaryEmail")
       .populate("assignedToId", "firstName lastName")
-    return res.json(retainers)
+    return res.json({ retainers })
   } catch (err) {
     return res.status(500).json({ error: "Failed to fetch retainers" })
   }

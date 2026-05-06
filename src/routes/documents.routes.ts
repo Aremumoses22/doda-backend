@@ -3,11 +3,13 @@ import multer from "multer"
 import path from "path"
 import fs from "fs"
 import { LegalDocument } from "../models/Document.model"
+import { Client } from "../models/Client.model"
 import { requireAuth, requireRole } from "../middleware/auth.middleware"
 import { uploadDocument, getSignedUrl, deleteDocument } from "../services/storage.service"
 
 const router = Router()
-const adminRoles = ["principal", "lawyer"] as const
+// All admin roles can read/manage documents
+const adminRoles = ["principal", "lawyer", "admin_staff", "billing_admin"] as const
 
 // Multer — temp disk storage (files cleaned up after Cloudinary upload)
 const upload = multer({
@@ -22,15 +24,30 @@ const upload = multer({
 })
 
 // GET /api/documents
-router.get("/", requireAuth, requireRole(...adminRoles), async (req, res) => {
+router.get("/", requireAuth, async (req, res) => {
   try {
-    const { clientId, matterId, category, status, search, page = "1", limit = "20" } = req.query as Record<string, string>
+    const { clientId, matterId, category, documentType, status, search, page = "1", limit = "20" } = req.query as Record<string, string>
     const filter: Record<string, unknown> = {}
-    if (clientId) filter.clientId = clientId
+
+    if (req.user!.role === "client") {
+      // Clients only see documents explicitly shared with them
+      const client = await Client.findOne({ userId: req.user!.id }).select("_id").lean()
+      if (!client) return res.json({ documents: [], total: 0, page: 1, limit: parseInt(limit) })
+      filter.clientId = client._id
+      filter.visibleToClient = true
+    } else {
+      // Admin: apply optional filters
+      if (!req.user || !["principal", "lawyer", "admin_staff", "billing_admin"].includes(req.user.role)) {
+        return res.status(403).json({ error: "Access denied" })
+      }
+      if (clientId) filter.clientId = clientId
+    }
+
     if (matterId) filter.matterId = matterId
-    if (category) filter.category = category
+    if (category || documentType) filter.category = category || documentType
     if (status) filter.status = status
     if (search) filter.name = { $regex: search, $options: "i" }
+
     const skip = (parseInt(page) - 1) * parseInt(limit)
     const [documents, total] = await Promise.all([
       LegalDocument.find(filter)
@@ -49,13 +66,17 @@ router.get("/", requireAuth, requireRole(...adminRoles), async (req, res) => {
 })
 
 // GET /api/documents/:id
-router.get("/:id", requireAuth, requireRole(...adminRoles), async (req, res) => {
+router.get("/:id", requireAuth, async (req, res) => {
   try {
     const doc = await LegalDocument.findById(req.params.id)
       .populate("clientId", "companyName individualName")
       .populate("matterId", "title matterCode")
       .populate("uploadedById", "firstName lastName")
     if (!doc) return res.status(404).json({ error: "Document not found" })
+
+    if (req.user!.role === "client" && !doc.visibleToClient) {
+      return res.status(403).json({ error: "Access denied" })
+    }
     return res.json(doc)
   } catch (err) {
     return res.status(500).json({ error: "Failed to fetch document" })
@@ -66,16 +87,22 @@ router.get("/:id", requireAuth, requireRole(...adminRoles), async (req, res) => 
 router.post("/", requireAuth, requireRole(...adminRoles), upload.single("file"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "No file provided" })
   try {
-    const { name, category, clientId, matterId, version = "v1", visibleToClient = "false" } = req.body
+    // Accept both `name` and `title` for compatibility with both admin and client UIs
+    const name     = (req.body.name || req.body.title || req.file.originalname) as string
+    // Accept both `category` and `documentType`
+    const category = (req.body.category || req.body.documentType || "other") as string
+    const { clientId, matterId, version = "v1", visibleToClient = "false" } = req.body
+
     const uploadResult = await uploadDocument(req.file.path, clientId, matterId)
 
     const doc = await LegalDocument.create({
-      name: name || req.file.originalname,
+      name,
+      originalName: req.file.originalname,
       fileUrl: uploadResult.secure_url,
       fileType: path.extname(req.file.originalname).replace(".", ""),
       fileSize: req.file.size,
       cloudinaryPublicId: uploadResult.public_id,
-      category: category || "other",
+      category,
       clientId: clientId || null,
       matterId: matterId || null,
       uploadedById: req.user!.id,

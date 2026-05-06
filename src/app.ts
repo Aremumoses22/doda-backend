@@ -1,4 +1,5 @@
 import express from "express"
+import path from "path"
 import cors from "cors"
 import helmet from "helmet"
 import cookieParser from "cookie-parser"
@@ -39,6 +40,9 @@ app.use(
   "/api/webhooks/paystack",
   express.raw({ type: "application/json" })
 )
+
+// ── Local file uploads (fallback when Cloudinary not configured) ──────────────
+app.use("/local_uploads", express.static(path.join(process.cwd(), "local_uploads")))
 
 // ── Body parsing ──────────────────────────────────────────────────────────────
 app.use(express.json({ limit: "10mb" }))

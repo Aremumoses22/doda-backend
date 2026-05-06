@@ -17,6 +17,16 @@ router.get("/", requireAuth, async (req, res) => {
   }
 })
 
+// PATCH /api/notifications/read-all  — must be defined BEFORE /:id/read
+router.patch("/read-all", requireAuth, async (req, res) => {
+  try {
+    await Notification.updateMany({ userId: req.user!.id, isRead: false }, { isRead: true })
+    return res.json({ success: true })
+  } catch (err) {
+    return res.status(500).json({ error: "Failed to mark all as read" })
+  }
+})
+
 // PATCH /api/notifications/:id/read
 router.patch("/:id/read", requireAuth, async (req, res) => {
   try {
@@ -29,16 +39,6 @@ router.patch("/:id/read", requireAuth, async (req, res) => {
     return res.json(notification)
   } catch (err) {
     return res.status(500).json({ error: "Failed to update notification" })
-  }
-})
-
-// PATCH /api/notifications/read-all
-router.patch("/read-all", requireAuth, async (req, res) => {
-  try {
-    await Notification.updateMany({ userId: req.user!.id, isRead: false }, { isRead: true })
-    return res.json({ success: true })
-  } catch (err) {
-    return res.status(500).json({ error: "Failed to mark all as read" })
   }
 })
 

@@ -1,20 +1,35 @@
 import { Router } from "express"
 import { Matter } from "../models/Matter.model"
 import { MatterTask } from "../models/MatterTask.model"
+import { Client } from "../models/Client.model"
 import { requireAuth, requireRole } from "../middleware/auth.middleware"
 
 const router = Router()
 const adminRoles = ["principal", "admin_staff", "lawyer", "billing_admin"] as const
 
 // GET /api/matters
-router.get("/", requireAuth, requireRole(...adminRoles), async (req, res) => {
+router.get("/", requireAuth, async (req, res) => {
   try {
-    const { status, practiceArea, assignedToId, clientId, search, page = "1", limit = "20" } = req.query as Record<string, string>
+    const { status, practiceArea, assignedToId, search, page = "1", limit = "20" } = req.query as Record<string, string>
     const filter: Record<string, unknown> = {}
+
+    if (req.user!.role === "client") {
+      // Clients only see their own matters
+      const client = await Client.findOne({ userId: req.user!.id }).select("_id").lean()
+      if (!client) return res.json({ matters: [], total: 0, page: 1, limit: parseInt(limit) })
+      filter.clientId = client._id
+    } else {
+      // Admin: apply optional filters
+      if (!adminRoles.includes(req.user!.role as typeof adminRoles[number])) {
+        return res.status(403).json({ error: "Access denied" })
+      }
+      const { clientId } = req.query as Record<string, string>
+      if (clientId) filter.clientId = clientId
+    }
+
     if (status) filter.status = status
     if (practiceArea) filter.practiceArea = practiceArea
     if (assignedToId) filter.assignedToId = assignedToId
-    if (clientId) filter.clientId = clientId
     if (search) filter.$or = [
       { title: { $regex: search, $options: "i" } },
       { matterCode: { $regex: search, $options: "i" } },
@@ -26,23 +41,54 @@ router.get("/", requireAuth, requireRole(...adminRoles), async (req, res) => {
         .skip(skip)
         .limit(parseInt(limit))
         .populate("clientId", "companyName individualName clientCode")
-        .populate("assignedToId", "firstName lastName"),
+        .populate("assignedToId", "firstName lastName email"),
       Matter.countDocuments(filter),
     ])
-    return res.json({ matters, total, page: parseInt(page), limit: parseInt(limit) })
+
+    // Attach tasks to each matter so client portal can show progress
+    const matterIds = matters.map(m => m._id)
+    const tasks = await MatterTask.find({ matterId: { $in: matterIds } })
+      .select("matterId title status assignedToClient completedAt notes sortOrder")
+      .lean()
+    const tasksByMatter = new Map<string, typeof tasks>()
+    tasks.forEach(t => {
+      const key = String(t.matterId)
+      if (!tasksByMatter.has(key)) tasksByMatter.set(key, [])
+      tasksByMatter.get(key)!.push(t)
+    })
+    const mattersWithTasks = matters.map(m => ({
+      ...(m.toObject ? m.toObject() : m),
+      tasks: tasksByMatter.get(String(m._id)) ?? [],
+    }))
+
+    return res.json({ matters: mattersWithTasks, total, page: parseInt(page), limit: parseInt(limit) })
   } catch (err) {
+    console.error("[MATTERS] GET /:", err)
     return res.status(500).json({ error: "Failed to fetch matters" })
   }
 })
 
 // GET /api/matters/:id
-router.get("/:id", requireAuth, requireRole(...adminRoles), async (req, res) => {
+router.get("/:id", requireAuth, async (req, res) => {
   try {
     const matter = await Matter.findById(req.params.id)
       .populate("clientId", "companyName individualName clientCode primaryEmail")
       .populate("assignedToId", "firstName lastName email")
     if (!matter) return res.status(404).json({ error: "Matter not found" })
-    return res.json(matter)
+
+    // Clients may only view their own matters
+    if (req.user!.role === "client") {
+      const client = await Client.findOne({ userId: req.user!.id }).select("_id").lean()
+      if (!client || String(matter.clientId) !== String(client._id)) {
+        return res.status(403).json({ error: "Access denied" })
+      }
+    }
+
+    // Attach tasks
+    const tasks = await MatterTask.find({ matterId: matter._id })
+      .sort({ sortOrder: 1, createdAt: 1 })
+      .populate("assignedToId", "firstName lastName")
+    return res.json({ ...matter.toObject(), tasks })
   } catch (err) {
     return res.status(500).json({ error: "Failed to fetch matter" })
   }
